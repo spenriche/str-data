@@ -5,6 +5,7 @@ import type { ForecastPoint } from "@/app/lib/analytics";
 
 const CLEANING_RATE = 0.15;
 const MGMT_RATE = 0.175;
+const MAIN_FEE = 1575; // flat monthly 822 Main fee earned by the entity
 
 // Fixed monthly operating expenses for the management entity.
 const FIXED_EXPENSES: { label: string; monthly: number }[] = [
@@ -34,7 +35,7 @@ export default function MgmtRevenueTable({ points }: { points: ForecastPoint[] }
       const cleaning = gross * CLEANING_RATE;
       const net = gross - cleaning;
       const mgmtFee = net * MGMT_RATE;
-      return { key: p.key, gross, cleaning, net, mgmtFee, profit: mgmtFee - FIXED_TOTAL };
+      return { key: p.key, gross, cleaning, net, mgmtFee, profit: mgmtFee + MAIN_FEE - FIXED_TOTAL };
     });
 
   const n = cols.length;
@@ -45,7 +46,8 @@ export default function MgmtRevenueTable({ points }: { points: ForecastPoint[] }
     { label: "Forecast revenue", values: cols.map((c) => c.gross), total: sum((c) => c.gross), cls: "text-slate-700" },
     { label: "Cleaning (15%)", values: cols.map((c) => c.cleaning), total: sum((c) => c.cleaning), cls: "text-rose-700", sign: "−" },
     { label: "Net after cleaning", values: cols.map((c) => c.net), total: sum((c) => c.net), cls: "text-slate-500" },
-    { label: "Management revenue (17.5%)", values: cols.map((c) => c.mgmtFee), total: sum((c) => c.mgmtFee), cls: "font-semibold text-emerald-700" },
+    { label: "822 Main Fee", values: cols.map(() => MAIN_FEE), total: MAIN_FEE * n, cls: "text-emerald-700" },
+    { label: "Management revenue (17.5%)", values: cols.map((c) => c.mgmtFee + MAIN_FEE), total: sum((c) => c.mgmtFee) + MAIN_FEE * n, cls: "font-semibold text-emerald-700" },
     ...FIXED_EXPENSES.map((e, i) => ({
       label: e.label,
       values: cols.map(() => e.monthly),
@@ -55,7 +57,7 @@ export default function MgmtRevenueTable({ points }: { points: ForecastPoint[] }
       rule: i === 0 ? ("thin" as const) : undefined,
     })),
     { label: "Total fixed expenses", values: cols.map(() => FIXED_TOTAL), total: FIXED_TOTAL * n, cls: "font-medium text-rose-700", sign: "−", rule: "thin" },
-    { label: "Est. net profit", values: cols.map((c) => c.profit), total: sum((c) => c.mgmtFee) - FIXED_TOTAL * n, cls: "font-semibold", rule: "thick", isNet: true },
+    { label: "Est. net profit", values: cols.map((c) => c.profit), total: sum((c) => c.mgmtFee) + MAIN_FEE * n - FIXED_TOTAL * n, cls: "font-semibold", rule: "thick", isNet: true },
   ];
 
   const ruleCls = (rule?: "thin" | "thick") =>
@@ -72,8 +74,8 @@ export default function MgmtRevenueTable({ points }: { points: ForecastPoint[] }
         </h2>
         <p className="mt-0.5 text-xs text-ink-600">
           Forecast revenue less {Math.round(CLEANING_RATE * 100)}% cleaning, then a{" "}
-          {(MGMT_RATE * 100).toFixed(1)}% management fee, less fixed operating expenses ={" "}
-          estimated net profit. Next 12 months.
+          {(MGMT_RATE * 100).toFixed(1)}% management fee plus the 822 Main fee, less fixed operating
+          expenses = estimated net profit. Next 12 months.
         </p>
       </div>
 

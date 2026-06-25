@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+.env
+.env.local
+.env*.local
+.DS_Store
+*.log
+.vercel
+app/data/dataset.json
+inspect_data.py
+inspect2.py

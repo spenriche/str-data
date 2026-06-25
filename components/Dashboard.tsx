@@ -5,6 +5,7 @@ import type { Dataset } from "@/app/lib/types";
 import {
   applyFilters,
   buildCityGroups,
+  buildForecastLayers,
   buildSeasonality,
   buildTrend,
   forecastRevenueSeasonal,
@@ -27,6 +28,8 @@ import Filters from "./Filters";
 import KpiCards from "./KpiCards";
 import RevenueTrendChart from "./RevenueTrendChart";
 import ForecastChart from "./ForecastChart";
+import ForecastSeasonChart from "./ForecastSeasonChart";
+import MgmtRevenueTable from "./MgmtRevenueTable";
 import SeasonalityChart from "./SeasonalityChart";
 import CityBreakdownChart from "./CityBreakdownChart";
 import UnitTable from "./UnitTable";
@@ -58,7 +61,7 @@ export default function Dashboard({ dataset }: { dataset: Dataset }) {
   const soldDate = useMemo(() => soldDateById(), []);
   const soldListings = useMemo(() => merged.filter((l) => soldSet.has(l.id)), [merged, soldSet]);
 
-  const [includeSold, setIncludeSold] = useState(true);
+  const [includeSold, setIncludeSold] = useState(false);
 
   // The active universe every downstream view uses: optionally drops sold ones.
   const listings = useMemo(
@@ -107,11 +110,13 @@ export default function Dashboard({ dataset }: { dataset: Dataset }) {
     const trend = buildTrend(totals, months);
     const forecast = horizon > 0 ? forecastTrend(trend, horizon) : [];
     const revForecast = forecastRevenueSeasonal(months, totals, 12);
+    const allTotals = monthlyTotals(filtered, allMonths);
+    const fcLayers = buildForecastLayers(revForecast.points, allTotals, 3);
     const season = buildSeasonality(totals, months);
     const cityData = cityTotals(filtered, months);
     const years = [...new Set(months.map(yearOf))].sort();
     const table = buildCityGroups(filtered, months, years, dedup.flaggedIds);
-    return { months, filtered, totals, kpis, trend, forecast, revForecast, season, cityData, years, table };
+    return { months, filtered, totals, kpis, trend, forecast, revForecast, fcLayers, season, cityData, years, table };
   }, [listings, filter, horizon, allMonths, dedup.flaggedIds]);
 
   const excludeSet = new Set(filter.excludeIds);
@@ -219,6 +224,18 @@ export default function Dashboard({ dataset }: { dataset: Dataset }) {
           }
         />
         <ForecastChart points={model.revForecast.points} />
+      </div>
+
+      <div className="mt-4 card p-4">
+        <SectionTitle
+          title="Forecast vs prior years — next 12 months"
+          subtitle="Next-12-month projection (dashed) layered over each prior year's actuals for the same calendar months."
+        />
+        <ForecastSeasonChart data={model.fcLayers.data} years={model.fcLayers.years} />
+      </div>
+
+      <div className="mt-4">
+        <MgmtRevenueTable points={model.revForecast.points} />
       </div>
 
       <div className="mt-4">

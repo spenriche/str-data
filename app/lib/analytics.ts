@@ -1,4 +1,4 @@
-import { addMonths, monthName, yearOf } from "./format";
+import { addMonths, monthName, monthOf, shortMonthLabel, yearOf } from "./format";
 import type { Listing, MonthKey } from "./types";
 
 export interface FilterState {
@@ -127,8 +127,9 @@ export interface RevenueForecast {
 
 const mean = (a: number[]) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
 
-// Damped multiplicative Holt-Winters. Returns one-step fitted values, the
-// h-step forecast, and the fit RMSE. Seasonal period m (=12 months).
+// Damped ADDITIVE Holt-Winters. Additive (not multiplicative) so a series with
+// big level changes and zero months can't explode via division. Returns
+// one-step fitted values (window-aligned), the h-step forecast, and fit RMSE.
 function holtWinters(
   y: number[],
   m: number,
@@ -139,22 +140,20 @@ function holtWinters(
   horizon: number
 ) {
   const n = y.length;
-  const eps = 1; // guard against zero division for multiplicative seasonals
-  let level = mean(y.slice(0, m)) || eps;
+  let level = mean(y.slice(0, m));
   let trend = (mean(y.slice(m, 2 * m)) - mean(y.slice(0, m))) / m;
   const season: number[] = [];
-  for (let i = 0; i < m; i++) season[i] = (y[i] + eps) / (level + eps);
-  const sMean = mean(season) || 1;
-  for (let i = 0; i < m; i++) season[i] /= sMean; // normalize to ~1
+  for (let i = 0; i < m; i++) season[i] = y[i] - level;
+  const sMean = mean(season);
+  for (let i = 0; i < m; i++) season[i] -= sMean; // additive seasonals sum ~ 0
 
   const fitted: number[] = new Array(n).fill(NaN);
   for (let i = 0; i < n; i++) {
-    const s = season[i % m] || 1;
-    fitted[i] = (level + phi * trend) * s;
-    const sPrev = season[i % m] || 1;
-    const newLevel = alpha * ((y[i] + eps) / sPrev) + (1 - alpha) * (level + phi * trend);
+    const s = season[i % m];
+    fitted[i] = level + phi * trend + s;
+    const newLevel = alpha * (y[i] - s) + (1 - alpha) * (level + phi * trend);
     const newTrend = beta * (newLevel - level) + (1 - beta) * phi * trend;
-    season[i % m] = gamma * ((y[i] + eps) / (newLevel + eps)) + (1 - gamma) * sPrev;
+    season[i % m] = gamma * (y[i] - newLevel) + (1 - gamma) * s;
     level = newLevel;
     trend = newTrend;
   }
@@ -163,8 +162,8 @@ function holtWinters(
   let damp = 0;
   for (let h = 1; h <= horizon; h++) {
     damp += Math.pow(phi, h);
-    const s = season[(n + h - 1) % m] || 1;
-    fc.push(Math.max(0, (level + damp * trend) * s));
+    const s = season[(n + h - 1) % m];
+    fc.push(level + damp * trend + s);
   }
 
   let sse = 0;
@@ -183,61 +182,72 @@ export function forecastRevenueSeasonal(
   totals: Map<MonthKey, number>,
   horizon = 12
 ): RevenueForecast {
-  const y = months.map((mk) => totals.get(mk) ?? 0);
-  const n = y.length;
+  const yFull = months.map((mk) => totals.get(mk) ?? 0);
+  const n = yFull.length;
   const m = 12;
   const lastKey = months[n - 1];
   const z = 1.28; // ~80% interval
+
+  // Fit on a recent window so the early portfolio ramp-up (near-zero months
+  // years ago) doesn't distort the level/trend/seasonals. Plot all history.
+  const WIN = Math.min(n, 36);
+  const y = yFull.slice(-WIN);
 
   let fitted: number[] = [];
   let fc: number[] = [];
   let rmse = 0;
   let method = "Linear trend";
 
-  if (n >= 2 * m) {
+  if (WIN >= 2 * m) {
     // Grid-search smoothing params to minimize in-sample one-step error.
     const grid = [0.1, 0.3, 0.5, 0.7, 0.9];
     let best: { rmse: number; fitted: number[]; fc: number[] } | null = null;
     for (const a of grid)
       for (const b of grid)
         for (const g of grid) {
-          const r = holtWinters(y, m, a, b, g, 0.9, horizon);
+          const r = holtWinters(y, m, a, b, g, 0.85, horizon);
           if (!best || r.rmse < best.rmse) best = { rmse: r.rmse, fitted: r.fitted, fc: r.fc };
         }
     if (best) {
       fitted = best.fitted;
       fc = best.fc;
       rmse = best.rmse;
-      method = "Holt-Winters (seasonal, damped)";
+      method = "Holt-Winters (additive, damped)";
     }
   }
 
   if (!fc.length) {
-    // Fallback: linear regression on the trailing window.
-    const win = Math.min(n, 12);
-    const ys = y.slice(-win);
-    const xs = ys.map((_, i) => i);
+    // Fallback: linear regression on the (windowed) series.
+    const xs = y.map((_, i) => i);
     const mx = mean(xs);
-    const my = mean(ys);
+    const my = mean(y);
     let num = 0;
     let den = 0;
-    for (let i = 0; i < win; i++) {
-      num += (xs[i] - mx) * (ys[i] - my);
+    for (let i = 0; i < y.length; i++) {
+      num += (xs[i] - mx) * (y[i] - my);
       den += (xs[i] - mx) ** 2;
     }
     const slope = den ? num / den : 0;
     const intercept = my - slope * mx;
     fitted = xs.map((x) => intercept + slope * x);
     let sse = 0;
-    for (let i = 0; i < win; i++) sse += (ys[i] - fitted[i]) ** 2;
-    rmse = Math.sqrt(sse / Math.max(1, win));
+    for (let i = 0; i < y.length; i++) sse += (y[i] - fitted[i]) ** 2;
+    rmse = Math.sqrt(sse / Math.max(1, y.length));
     fc = [];
-    for (let h = 1; h <= horizon; h++) fc.push(Math.max(0, intercept + slope * (win - 1 + h)));
+    for (let h = 1; h <= horizon; h++)
+      fc.push(intercept + slope * (y.length - 1 + h));
   }
+
+  // Sanity clamp: revenue can't be negative, and the portfolio total shouldn't
+  // jump far beyond its recent observed range over a 12-month horizon.
+  const recent = y.slice(-Math.min(y.length, 12));
+  const recentMax = Math.max(0, ...recent);
+  const cap = recentMax * 2.5 + 1;
+  fc = fc.map((v) => Math.min(Math.max(0, v), cap));
 
   const points: ForecastPoint[] = months.map((mk, i) => ({
     key: mk,
-    actual: y[i],
+    actual: yFull[i],
     forecast: null,
     loBase: null,
     band: null,
@@ -271,7 +281,7 @@ export function forecastRevenueSeasonal(
 
   let mapeSum = 0;
   let mapeCnt = 0;
-  for (let i = m; i < n; i++) {
+  for (let i = m; i < y.length; i++) {
     if (y[i] > 0 && Number.isFinite(fitted[i])) {
       mapeSum += Math.abs((y[i] - fitted[i]) / y[i]);
       mapeCnt++;
@@ -281,6 +291,46 @@ export function forecastRevenueSeasonal(
   const total12 = fc.reduce((s, x) => s + x, 0);
 
   return { points, method, total12, fitMape };
+}
+
+// Layer the next-12-month forecast against each prior year's actuals for the
+// same calendar months (so the projection can be eyeballed vs history).
+export interface ForecastLayerRow {
+  key: MonthKey;
+  label: string; // "Apr '26"
+  forecast: number | null;
+  [yearKey: string]: number | string | null; // y2023, y2024, …
+}
+
+export function buildForecastLayers(
+  forecast: ForecastPoint[],
+  allTotals: Map<MonthKey, number>,
+  maxYears = 3
+): { data: ForecastLayerRow[]; years: number[] } {
+  const fc = forecast.filter((p) => p.actual === null && p.forecast !== null);
+  if (!fc.length) return { data: [], years: [] };
+
+  const startYear = yearOf(fc[0].key);
+  const priorYears = [...new Set([...allTotals.keys()].map(yearOf))]
+    .filter((y) => y < startYear)
+    .sort((a, b) => a - b);
+  const years = priorYears.slice(-maxYears);
+
+  const data = fc.map((p) => {
+    const mm = String(monthOf(p.key)).padStart(2, "0");
+    const row: ForecastLayerRow = {
+      key: p.key,
+      label: shortMonthLabel(p.key),
+      forecast: p.forecast === null ? null : Math.round(p.forecast),
+    };
+    for (const yr of years) {
+      const v = allTotals.get(`${yr}-${mm}`);
+      row[`y${yr}`] = v === null || v === undefined ? null : Math.round(v);
+    }
+    return row;
+  });
+
+  return { data, years };
 }
 
 export interface Kpis {
